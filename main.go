@@ -1,17 +1,17 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"flag"
-	"fmt"
-	"net/http"
 	"os"
+	"time"
 
 	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
 	"github.com/gorilla/mux"
-	_ "github.com/lib/pq"
 	"github.com/rwenz3l/lmdb/server"
+	"github.com/rwenz3l/lmdb/server/anime"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func main() {
@@ -20,40 +20,24 @@ func main() {
 	var httpPort = flag.Int("port", 8080, "Port for the HTTP WebServer")
 	flag.Parse()
 
-	// Create Dependencies
+	// Logger
 	logger := log.NewJSONLogger(log.NewSyncWriter(os.Stdout))
-	_, err := sql.Open("postgres", "user=lmdb dbname=media sslmode=verify-full")
-	if err != nil {
-		level.Error(logger).Log("Could not connect to postgres")
-		panic(err)
-	}
-	level.Debug(logger).Log("msg", "Connected to PostgreSQL")
 
-	// Router + Server
-	r := mux.NewRouter()
-	srv := server.New(logger)
+	// MongoDB
+	// docker run -p 27017:27017 mongo:latest
+	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+	client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+	db := client.Database("lmdb")
 
-	// Routes
-	// Static FileServer
-	r.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(*dataDir))))
+	// Router
+	router := mux.NewRouter()
+	// Services
+	anime := anime.NewService(logger, db.Collection("anime"))
 
-	// Home
-	r.HandleFunc("/", srv.HomeHandler).Methods("GET")
+	// Server
+	srv := server.New(logger, router, anime)
+	srv.InitRoutes(*dataDir)
 
-	// API - Search
-	r.HandleFunc("/search/tv", srv.TVSearchHandler).Methods("GET")
-	r.HandleFunc("/search/movie", srv.MovieSearchHandler).Methods("GET")
-	r.HandleFunc("/search/anime", srv.AnimeSearchHandler).Methods("GET")
-	r.HandleFunc("/search/person", srv.PersonSearchHandler).Methods("GET")
-
-	// API - TV [GET, POST, PUT, DELETE]
-	// API - Movie [GET, POST, PUT, DELETE]
-	// API - Anime  [GET, POST, PUT, DELETE]
-
-	// Start WebServer
-	level.Debug(logger).Log("msg", fmt.Sprintf("Starting Webserver on %d", *httpPort))
-	err = http.ListenAndServe(fmt.Sprintf(":%d", *httpPort), r)
-	if err != nil {
-		level.Debug(logger).Log("msg", "Error on httpServer", "err", err)
-	}
+	// Run the Server
+	srv.Run(*httpPort)
 }
